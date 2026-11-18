@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kdy se sejdem?</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --ink:#1d1d1f; --muted:#777; --line:#e3e1dc;
+          --acc:#2f6f4f; --acc-soft:#d7eadf; --warn:#b3261e; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         background:var(--bg); color:var(--ink); }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { margin: 0 0 4px; font-size: 28px; }
+  h2 { font-size: 17px; margin: 0 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
+  input, select { font: inherit; padding:9px 11px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  input[type=text] { width:100%; }
+  button { font: inherit; padding:9px 16px; border-radius:8px; border:1px solid var(--acc);
+           background:var(--acc); color:#fff; cursor:pointer; }
+  button.ghost { background:#fff; color:var(--acc); }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; }
+  .err { color: var(--warn); margin-top:10px; }
+  .cols { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+  @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+
+  /* výběr dnů */
+  .cal { display:grid; grid-template-columns: repeat(7, 1fr); gap:4px; max-width:420px; user-select:none; }
+  .cal .dow { font-size:12px; color:var(--muted); text-align:center; }
+  .cal .d { text-align:center; padding:8px 0; border-radius:6px; border:1px solid var(--line); cursor:pointer; font-size:14px; touch-action:none; }
+  .cal .d.on { background:var(--acc); color:#fff; border-color:var(--acc); }
+  .cal .d.past { opacity:.35; pointer-events:none; }
+
+  /* mřížka */
+  .grid { display:grid; gap:2px; user-select:none; touch-action:none; overflow-x:auto; }
+  .grid .h { font-size:12px; color:var(--muted); text-align:right; padding-right:6px; line-height:24px; }
+  .grid .dh { font-size:12px; text-align:center; color:var(--muted); line-height:1.2; padding-bottom:4px; }
+  .grid .dh b { color:var(--ink); display:block; font-size:13px; }
+  .grid .c { height:24px; border-radius:4px; background:#efeee9; cursor:pointer; position:relative; }
+  .grid .c.mine { background:var(--acc); }
+  .grid.heat .c { cursor:default; }
+  .grid .c.best { outline:2px solid #e0a100; outline-offset:-2px; }
+  .grid .c .n { position:absolute; inset:0; font-size:11px; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:600; }
+
+  .people { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+  .chip { font-size:13px; padding:4px 10px; border-radius:999px; background:#efeee9; }
+  .chip.hi { background:var(--acc); color:#fff; }
+  .best-list { margin:12px 0 0; padding-left:18px; font-size:14px; }
+  .best-list li { margin:4px 0; }
+  .muted { color:var(--muted); font-size:13px; }
+  .share { display:flex; gap:8px; }
+  .share input { flex:1; }
+</style>
+</head>
+<body>
+<div id="app">
+<main>
+  <h1>Kdy se sejdem?</h1>
+  <p class="sub">Protože skupinovej chat to fakt nezvládne.</p>
+
+  <!-- ===== VYTVOŘENÍ AKCE ===== -->
+  <template v-if="!eventId">
+    <div class="card">
+      <h2>1. Co a kdy</h2>
+      <label>Název akce</label>
+      <input type="text" v-model="form.title" placeholder="Pivo, deskovky, LAN párty…">
+      <div class="row" style="margin-top:14px">
+        <div><label>Od hodiny</label>
+          <select v-model.number="form.start_hour"><option v-for="h in 24" :value="h-1">{{ h-1 }}:00</option></select></div>
+        <div><label>Do hodiny</label>
+          <select v-model.number="form.end_hour"><option v-for="h in 24" :value="h">{{ h }}:00</option></select></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>2. Které dny připadaj v úvahu <span class="muted">(klikni nebo táhni)</span></h2>
+      <div class="cal" @pointerup="drag=null" @pointerleave="drag=null">
+        <div class="dow" v-for="d in ['Po','Út','St','Čt','Pá','So','Ne']">{{ d }}</div>
+        <div v-for="d in calDays" :key="d.iso" class="d" :data-iso="d.iso"
+             :class="{on: form.dates.has(d.iso), past: d.past}"
+             @pointerdown.prevent="calDown(d.iso, $event)" @pointermove="calMove($event)">
+          {{ d.day }}<span v-if="d.day===1">.{{ d.month }}.</span>
+        </div>
+      </div>
+      <p class="muted">Vybráno dnů: {{ form.dates.size }}</p>
+    </div>
+    <button @click="createEvent" :disabled="busy">Vytvořit a získat odkaz</button>
+    <div class="err" v-if="error">{{ error }}</div>
+  </template>
+
+  <!-- ===== AKCE ===== -->
+  <template v-else-if="ev">
+    <div class="card">
+      <h2 style="font-size:22px">{{ ev.title }}</h2>
+      <label>Pošli tenhle odkaz kámošům</label>
+      <div class="share">
+        <input type="text" :value="shareUrl" readonly @focus="$event.target.select()">
+        <button class="ghost" @click="copy">{{ copied ? 'Zkopírováno ✓' : 'Kopírovat' }}</button>
+      </div>
+    </div>
+
+    <div class="cols">
+      <div class="card">
+        <h2>Kdy můžu já</h2>
+        <div class="row" style="margin-bottom:14px">
+          <div style="flex:1"><label>Tvoje jméno</label>
+            <input type="text" v-model="name" placeholder="Jméno" @change="loadMine"></div>
+          <button @click="save" :disabled="!name.trim() || busy">{{ saved ? 'Uloženo ✓' : 'Uložit' }}</button>
+        </div>
+        <p class="muted" v-if="!name.trim()">Nejdřív zadej jméno, pak klikej/táhni v mřížce.</p>
+        <div class="grid" :style="gridStyle" @pointerup="endDrag" @pointerleave="endDrag"
+             :class="{dis: !name.trim()}">
+          <div></div>
+          <div class="dh" v-for="d in ev.dates"><b>{{ fmtDay(d) }}</b>{{ fmtDow(d) }}</div>
+          <template v-for="h in hours">
+            <div class="h">{{ h }}:00</div>
+            <div v-for="d in ev.dates" class="c" :data-slot="key(d,h)"
+                 :class="{mine: mine.has(key(d,h))}"
+                 @pointerdown.prevent="down(key(d,h), $event)" @pointermove="move($event)"></div>
+          </template>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Souhrn ({{ ev.responses.length }} {{ ev.responses.length === 1 ? 'člověk' : 'lidí' }})</h2>
+        <div class="grid heat" :style="gridStyle">
+          <div></div>
+          <div class="dh" v-for="d in ev.dates"><b>{{ fmtDay(d) }}</b>{{ fmtDow(d) }}</div>
+          <template v-for="h in hours">
+            <div class="h">{{ h }}:00</div>
+            <div v-for="d in ev.dates" class="c"
+                 :class="{best: maxCount > 0 && counts[key(d,h)] === maxCount}"
+                 :style="heatStyle(key(d,h))"
+                 @mouseenter="hover = key(d,h)" @mouseleave="hover = null">
+              <span class="n" v-if="counts[key(d,h)]">{{ counts[key(d,h)] }}</span>
+            </div>
+          </template>
+        </div>
+        <div class="people">
+          <span v-for="r in ev.responses" class="chip"
+                :class="{hi: hover && r.slots.includes(hover)}">{{ r.name }}</span>
+        </div>
+        <p class="muted" v-if="hover">{{ fmtSlot(hover) }}: {{ whoCan(hover).join(', ') || 'nikdo' }}</p>
+        <template v-if="bestSlots.length">
+          <h2 style="margin-top:18px">Nejlepší termíny</h2>
+          <ol class="best-list">
+            <li v-for="b in bestSlots">
+              <b>{{ b.label }}</b> – {{ b.count }}/{{ ev.responses.length }}
+              <span class="muted" v-if="b.missing.length">(nemůže: {{ b.missing.join(', ') }})</span>
+            </li>
+          </ol>
+        </template>
+      </div>
+    </div>
+    <p><a href="/">+ Nová akce</a></p>
+  </template>
+
+  <div class="err" v-else-if="error">{{ error }} <a href="/">Zpět</a></div>
+</main>
+</div>
+
+<script>
+const { createApp } = Vue;
+const DOW = ['Ne','Po','Út','St','Čt','Pá','So'];
+const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const parse = s => { const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); };
+
+createApp({
+  data() {
+    const m = location.pathname.match(/^\/e\/([\w-]+)/);
+    return {
+      eventId: m ? m[1] : null,
+      ev: null, error: '', busy: false, copied: false, saved: false,
+      form: { title: '', start_hour: 17, end_hour: 23, dates: new Set() },
+      name: '', mine: new Set(), drag: null, hover: null,
+    };
+  },
+  computed: {
+    calDays() {
+      const today = new Date(); today.setHours(0,0,0,0);
+      const start = new Date(today); start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+      return Array.from({ length: 35 }, (_, i) => {
+        const d = new Date(start); d.setDate(start.getDate() + i);
+        return { iso: iso(d), day: d.getDate(), month: d.getMonth() + 1, past: d < today };
+      });
+    },
+    hours() { return this.ev ? Array.from({ length: this.ev.end_hour - this.ev.start_hour }, (_, i) => this.ev.start_hour + i) : []; },
+    gridStyle() { return { gridTemplateColumns: `44px repeat(${this.ev.dates.length}, minmax(34px, 1fr))` }; },
+    shareUrl() { return location.origin + '/e/' + this.eventId; },
+    counts() {
+      const c = {};
+      for (const r of this.ev.responses) for (const s of r.slots) c[s] = (c[s] || 0) + 1;
+      return c;
+    },
+    maxCount() { return Math.max(0, ...Object.values(this.counts)); },
+    bestSlots() {
+      // spoj sousední hodiny se stejnou sestavou lidí do bloků
+      const all = this.ev.responses.map(r => r.name);
+      const blocks = [];
+      for (const d of this.ev.dates) {
+        let cur = null;
+        for (const h of [...this.hours, null]) {
+          const who = h === null ? '' : this.whoCan(this.key(d, h)).join('\u0000');
+          if (cur && who === cur.who) { cur.end = h + 1; continue; }
+          if (cur && cur.who) blocks.push(cur);
+          cur = h === null ? null : { d, start: h, end: h + 1, who };
+        }
+      }
+      return blocks
+        .map(b => {
+          const names = b.who.split('\u0000');
+          return { label: `${this.fmtDow(b.d)} ${this.fmtDay(b.d)} ${b.start}:00–${b.end}:00`,
+                   count: names.length, len: b.end - b.start,
+                   missing: all.filter(n => !names.includes(n)) };
+        })
+        .sort((a, b) => b.count - a.count || b.len - a.len)
+        .slice(0, 5);
+    },
+  },
+  methods: {
+    key(d, h) { return `${d}|${String(h).padStart(2, '0')}`; },
+    fmtDay(s) { const d = parse(s); return `${d.getDate()}. ${d.getMonth() + 1}.`; },
+    fmtDow(s) { return DOW[parse(s).getDay()]; },
+    fmtSlot(k) { const [d, h] = k.split('|'); return `${this.fmtDow(d)} ${this.fmtDay(d)} ${+h}:00`; },
+    whoCan(k) { return this.ev.responses.filter(r => r.slots.includes(k)).map(r => r.name); },
+    heatStyle(k) {
+      const n = this.counts[k] || 0, total = this.ev.responses.length || 1;
+      if (!n) return {};
+      return { background: `rgba(47,111,79,${0.18 + 0.82 * n / total})` };
+    },
+
+    // --- výběr dnů v kalendáři (táhnutí) ---
+    calDown(d, e) {
+      e.target.releasePointerCapture?.(e.pointerId);
+      this.drag = !this.form.dates.has(d);
+      this.calSet(d);
+    },
+    calMove(e) {
+      if (this.drag === null) return;
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      if (el?.dataset.iso && !el.classList.contains('past')) this.calSet(el.dataset.iso);
+    },
+    calSet(d) { this.drag ? this.form.dates.add(d) : this.form.dates.delete(d); },
+
+    async createEvent() {
+      this.error = '';
+      if (!this.form.title.trim()) return this.error = 'Zadej název.';
+      if (!this.form.dates.size) return this.error = 'Vyber aspoň jeden den.';
+      if (this.form.end_hour <= this.form.start_hour) return this.error = 'Konec musí bejt po začátku.';
+      this.busy = true;
+      try {
+        const res = await fetch('/api/events', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...this.form, dates: [...this.form.dates] }) });
+        if (!res.ok) throw new Error((await res.json()).detail || 'Chyba');
+        location.href = '/e/' + (await res.json()).id;
+      } catch (e) { this.error = String(e.message || e); } finally { this.busy = false; }
+    },
+
+    async load() {
+      const res = await fetch('/api/events/' + this.eventId);
+      if (!res.ok) { this.error = 'Tahle akce neexistuje.'; return; }
+      this.ev = await res.json();
+    },
+    loadMine() {
+      const r = this.ev.responses.find(r => r.name.toLowerCase() === this.name.trim().toLowerCase());
+      this.mine = new Set(r ? r.slots : []);
+      if (r) this.name = r.name;
+    },
+
+    // --- mřížka dostupnosti (táhnutí myší i prstem) ---
+    down(k, e) {
+      if (!this.name.trim()) return;
+      e.target.releasePointerCapture?.(e.pointerId);
+      this.drag = !this.mine.has(k);
+      this.set(k);
+    },
+    move(e) {
+      if (this.drag === null) return;
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      if (el?.dataset.slot) this.set(el.dataset.slot);
+    },
+    set(k) { this.drag ? this.mine.add(k) : this.mine.delete(k); this.saved = false; },
+    endDrag() { if (this.drag !== null) { this.drag = null; this.save(); } },
+
+    async save() {
+      const name = this.name.trim();
+      if (!name) return;
+      this.busy = true;
+      try {
+        await fetch(`/api/events/${this.eventId}/responses`, { method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, slots: [...this.mine] }) });
+        localStorage.setItem('name:' + this.eventId, name);
+        await this.load();
+        this.saved = true;
+      } finally { this.busy = false; }
+    },
+    copy() { navigator.clipboard.writeText(this.shareUrl); this.copied = true; setTimeout(() => this.copied = false, 1500); },
+  },
+  async mounted() {
+    if (!this.eventId) return;
+    await this.load();
+    if (!this.ev) return;
+    try { this.name = localStorage.getItem('name:' + this.eventId) || ''; } catch {}
+    if (this.name) this.loadMine();
+    setInterval(() => { if (this.drag === null && !this.busy) this.load(); }, 10000);
+  },
+}).mount('#app');
+</script>
+</body>
+</html>
